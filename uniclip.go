@@ -10,7 +10,6 @@ import (
 	"encoding/gob"
 	"errors"
 	"fmt"
-	"golang.org/x/crypto/ssh/terminal"
 	"io"
 	"io/ioutil"
 	"net"
@@ -21,6 +20,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/jessevdk/go-flags" // go-flags
+	"golang.org/x/crypto/ssh/terminal"
 
 	"golang.org/x/crypto/scrypt"
 )
@@ -48,54 +50,76 @@ Refer to https://github.com/quackduck/uniclip for more information`
 	password       []byte
 )
 
+type Option struct {
+	Version bool   `short:"v" long:"version" description:"Show version message"`
+	Port    int    `short:"p" long:"port" description:"Setup port"`
+	Debug   bool   `short:"d" long:"debug" description:"Setup debug mode"`
+	Help    bool   `short:"h" long:"help" description:"Show help message"`
+	Secure  bool   `short:"s" long:"secure" description:"Setup Secure Mode"`
+	Connect string `short:"c" long:"connect" description:"Server ip"`
+}
+
+// NewSomething create new instance of Something
+func GetDefaultOption() Option {
+	opt := Option{}
+	opt.Port = -1
+	opt.Connect = ""
+	opt.Version = false
+	opt.Debug = false
+	opt.Help = false
+	opt.Secure = false
+	return opt
+}
+
 // TODO: Add a way to reconnect (if computer goes to sleep)
 func main() {
-	if len(os.Args) > 4 {
-		handleError(errors.New("too many arguments"))
+	// getting options
+	opt := GetDefaultOption()
+	flags.Parse(&opt)
+
+	// handle error
+	if len(opt.Connect) == 0 && opt.Port == -1 {
+		handleError(errors.New("Invalid arguments, please enter server ip or port"))
 		fmt.Println(helpMsg)
 		return
 	}
-	if hasOption, _ := argsHaveOption("help", "h"); hasOption {
+
+	if opt.Help {
 		fmt.Println(helpMsg)
 		return
 	}
-	if hasOption, i := argsHaveOption("debug", "d"); hasOption {
-		printDebugInfo = true
-		os.Args = removeElemFromSlice(os.Args, i) // delete the debug option and run again
-		main()
-		return
-	}
+	printDebugInfo = opt.Debug
 	// --secure encrypts your data
-	if hasOption, i := argsHaveOption("secure", "s"); hasOption {
+	if opt.Secure {
 		secure = true
-		os.Args = removeElemFromSlice(os.Args, i) // delete the secure option and run again
 		fmt.Print("Password for --secure: ")
 		password, _ = terminal.ReadPassword(int(syscall.Stdin))
 		fmt.Println()
-		main()
-		return
 	}
-	if hasOption, _ := argsHaveOption("version", "v"); hasOption {
+	if opt.Version {
 		fmt.Println(version)
 		return
 	}
-	if len(os.Args) == 2 { // has exactly one argument
-		ConnectToServer(os.Args[1])
+	if len(opt.Connect) != 0 { // has exactly one argument
+		ConnectToServer(opt.Connect)
 		return
+	} else {
+		makeServer(opt.Port)
 	}
-	makeServer()
 }
 
-func makeServer() {
+func makeServer(port int) {
 	fmt.Println("Starting a new clipboard")
-	l, err := net.Listen("tcp4", ":") //nolint // complains about binding to all interfaces
+	ip := ":" + strconv.Itoa(port)
+	fmt.Println("Setting up:  " + ip)
+	l, err := net.Listen("tcp", ip) //nolint // complains about binding to all interfaces
 	if err != nil {
 		handleError(err)
 		return
 	}
 	defer l.Close()
-	port := strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
-	fmt.Println("Run", "`uniclip", getOutboundIP().String()+":"+port+"`", "to join this clipboard")
+	p_str := strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
+	fmt.Println("Run", "`uniclip", getOutboundIP().String()+":"+p_str+"`", "to join this clipboard")
 	fmt.Println()
 	for {
 		c, err := l.Accept()
@@ -119,7 +143,9 @@ func HandleClient(c net.Conn) {
 
 // Connect to the server (which starts a new clipboard)
 func ConnectToServer(address string) {
-	c, err := net.Dial("tcp4", address)
+	fmt.Println("Dialing:  " + address)
+	c, err := net.Dial("tcp", address)
+	fmt.Println("Connecting to server: " + address)
 	if c == nil {
 		handleError(err)
 		fmt.Println("Could not connect to", address)
@@ -410,18 +436,4 @@ func debug(a ...interface{}) {
 	if printDebugInfo {
 		fmt.Println("verbose:", a)
 	}
-}
-
-func argsHaveOption(long string, short string) (hasOption bool, foundAt int) {
-	for i, arg := range os.Args {
-		if arg == "--"+long || arg == "-"+short {
-			return true, i
-		}
-	}
-	return false, 0
-}
-
-// keep order
-func removeElemFromSlice(slice []string, i int) []string {
-	return append(slice[:i], slice[i+1:]...)
 }
