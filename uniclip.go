@@ -22,9 +22,11 @@ import (
 	"time"
 
 	"github.com/jessevdk/go-flags" // go-flags
-	"golang.org/x/crypto/ssh/terminal"
-
+	"github.com/saintfish/chardet"
 	"golang.org/x/crypto/scrypt"
+	"golang.org/x/crypto/ssh/terminal"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/transform"
 )
 
 var (
@@ -354,10 +356,26 @@ func runGetClipCommand() string {
 		handleError(err)
 		return "An error occurred wile getting the local clipboard"
 	}
+	// 创建字符编码检测器
+	detector := chardet.NewTextDetector()
+
+	// 检测文本的字符编码
+	result, _ := detector.DetectBest(out)
+	// 输出检测结果
+	fmt.Println("Original String: %q, Detected Encoding:", out, result.Charset)
+	// 创建 GB18030 解码器
+	decoder := simplifiedchinese.GB18030.NewDecoder()
+
+	// 将 GB18030 编码的字节切片转换为 UTF-8 编码的字节切片
+	utf8Bytes, _, _ := transform.Bytes(decoder, out)
+
+	// 将 UTF-8 编码的字节切片转换为字符串
+	utf8String := string(utf8Bytes)
+	fmt.Println("UTF8string: %s", utf8String)
 	if runtime.GOOS == "windows" {
-		return strings.TrimSuffix(string(out), "\r\n") // powershell's get-clipboard adds a windows newline to the end for some reason
+		return strings.TrimSuffix(utf8String, "\r\n") // powershell's get-clipboard adds a windows newline to the end for some reason
 	}
-	return string(out)
+	return string(utf8String)
 }
 
 func getLocalClip() string {
