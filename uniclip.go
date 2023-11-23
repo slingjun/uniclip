@@ -20,12 +20,11 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	common "uniclip/Common"
 
 	"github.com/jessevdk/go-flags" // go-flags
-	"github.com/saintfish/chardet"
 	"golang.org/x/crypto/scrypt"
 	"golang.org/x/crypto/ssh/terminal"
-	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
 )
 
@@ -113,7 +112,6 @@ func main() {
 func makeServer(port int) {
 	fmt.Println("Starting a new clipboard")
 	ip := ":" + strconv.Itoa(port)
-	fmt.Println("Setting up:  " + ip)
 	l, err := net.Listen("tcp", ip) //nolint // complains about binding to all interfaces
 	if err != nil {
 		handleError(err)
@@ -145,7 +143,6 @@ func HandleClient(c net.Conn) {
 
 // Connect to the server (which starts a new clipboard)
 func ConnectToServer(address string) {
-	fmt.Println("Dialing:  " + address)
 	c, err := net.Dial("tcp", address)
 	fmt.Println("Connecting to server: " + address)
 	if c == nil {
@@ -159,15 +156,15 @@ func ConnectToServer(address string) {
 	}
 	defer func() { _ = c.Close() }()
 	fmt.Println("Connected to the clipboard")
+	go MonitorLocalClip(bufio.NewWriter(c))
 	go MonitorSentClips(bufio.NewReader(c))
-	MonitorLocalClip(bufio.NewWriter(c))
 }
 
 // monitors for changes to the local clipboard and writes them to w
 func MonitorLocalClip(w *bufio.Writer) {
 	for {
 		localClipboard = getLocalClip()
-		//debug("clipboard changed so sending it. localClipboard =", localClipboard)
+		//debug("clipboard changed so sending it. localClipboard =", localClipboard
 		err := sendClipboard(w, localClipboard)
 		if err != nil {
 			handleError(err)
@@ -185,13 +182,11 @@ func MonitorSentClips(r *bufio.Reader) {
 	var foreignClipboardBytes []byte
 	for {
 		err := gob.NewDecoder(r).Decode(&foreignClipboardBytes)
-		if err != nil {
-			if err == io.EOF {
-				return // no need to monitor: disconnected
-			}
-			handleError(err)
-			continue // continue getting next message
-		}
+		// OS Encoding to UTF-8
+		result := common.GetBestCharset(foreignClipboardBytes)
+		fmt.Println("Client String: %q, Detected Encoding:", foreignClipboardBytes, result.Charset)
+		decoder := common.CvtEncoding(result.Charset).NewDecoder()
+		utf8Bytes, _, _ := transform.Bytes(decoder, foreignClipboardBytes)
 
 		// decrypt if needed
 		if secure {
@@ -202,7 +197,8 @@ func MonitorSentClips(r *bufio.Reader) {
 			}
 		}
 
-		foreignClipboard = string(foreignClipboardBytes)
+		foreignClipboard = string(utf8Bytes)
+		fmt.Println("UTF8string: %s", foreignClipboard)
 		// hacky way to prevent empty clipboard TODO: find out why empty cb happens
 		if foreignClipboard == "" {
 			continue
@@ -356,20 +352,12 @@ func runGetClipCommand() string {
 		handleError(err)
 		return "An error occurred wile getting the local clipboard"
 	}
-	// 创建字符编码检测器
-	detector := chardet.NewTextDetector()
 
-	// 检测文本的字符编码
-	result, _ := detector.DetectBest(out)
-	// 输出检测结果
+	// OS Encoding to UTF-8
+	result := common.GetBestCharset(out)
 	fmt.Println("Original String: %q, Detected Encoding:", out, result.Charset)
-	// 创建 GB18030 解码器
-	decoder := simplifiedchinese.GB18030.NewDecoder()
-
-	// 将 GB18030 编码的字节切片转换为 UTF-8 编码的字节切片
+	decoder := common.CvtEncoding(result.Charset).NewDecoder()
 	utf8Bytes, _, _ := transform.Bytes(decoder, out)
-
-	// 将 UTF-8 编码的字节切片转换为字符串
 	utf8String := string(utf8Bytes)
 	fmt.Println("UTF8string: %s", utf8String)
 	if runtime.GOOS == "windows" {
@@ -379,6 +367,7 @@ func runGetClipCommand() string {
 }
 
 func getLocalClip() string {
+	// return UTF-8 Encoded String
 	str := runGetClipCommand()
 	//for ; str == ""; str = runGetClipCommand() { // wait until it's not empty
 	//	time.Sleep(time.Millisecond * 100)
