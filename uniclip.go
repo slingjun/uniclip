@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	common "uniclip/Common"
@@ -44,6 +45,7 @@ It will also provide an address with which you can connect to the same clipboard
 Refer to https://github.com/quackduck/uniclip for more information`
 	listOfClients  = make([]*bufio.Writer, 0)
 	localClipboard string
+	local_mu       sync.Mutex
 	printDebugInfo = false
 	version        = "dev"
 	cryptoStrength = 16384
@@ -156,16 +158,17 @@ func ConnectToServer(address string) {
 	}
 	defer func() { _ = c.Close() }()
 	fmt.Println("Connected to the clipboard")
-	go MonitorLocalClip(bufio.NewWriter(c))
 	go MonitorSentClips(bufio.NewReader(c))
+	MonitorLocalClip(bufio.NewWriter(c))
 }
 
 // monitors for changes to the local clipboard and writes them to w
 func MonitorLocalClip(w *bufio.Writer) {
 	for {
+		local_mu.Lock()
 		localClipboard = getLocalClip()
-		//debug("clipboard changed so sending it. localClipboard =", localClipboard
 		err := sendClipboard(w, localClipboard)
+		local_mu.Unlock()
 		if err != nil {
 			fmt.Println("Error Occured")
 			handleError(err)
@@ -192,7 +195,7 @@ func MonitorSentClips(r *bufio.Reader) {
 		}
 		// OS Encoding to UTF-8
 		result := common.GetBestCharset(foreignClipboardBytes)
-		fmt.Println("Client String: %q, Detected Encoding:", foreignClipboardBytes, result.Charset)
+		debug("Client String: %q, Detected Encoding:", foreignClipboardBytes, result.Charset)
 		decoder := common.CvtEncoding(result.Charset).NewDecoder()
 		utf8Bytes, _, _ := transform.Bytes(decoder, foreignClipboardBytes)
 
@@ -206,15 +209,18 @@ func MonitorSentClips(r *bufio.Reader) {
 		}
 
 		foreignClipboard = string(utf8Bytes)
-		fmt.Println("UTF8string: %s", foreignClipboard)
+		fmt.Println("UTF8string: ", foreignClipboard)
 		// hacky way to prevent empty clipboard TODO: find out why empty cb happens
 		if foreignClipboard == "" {
 			continue
 		}
-		//foreignClipboard = decompress(foreignClipboardBytes)
+		local_mu.Lock()
 		setLocalClip(foreignClipboard)
 		localClipboard = foreignClipboard
 		debug("rcvd:", foreignClipboard)
+		debug("After set local clip: ", getLocalClip())
+		local_mu.Unlock()
+
 		for i := range listOfClients {
 			if listOfClients[i] != nil {
 				err = sendClipboard(listOfClients[i], foreignClipboard)
@@ -363,11 +369,11 @@ func runGetClipCommand() string {
 
 	// OS Encoding to UTF-8
 	result := common.GetBestCharset(out)
-	fmt.Println("Original String: %q, Detected Encoding:", out, result.Charset)
+	debug("Original String: %q, Detected Encoding:", out, result.Charset)
 	decoder := common.CvtEncoding(result.Charset).NewDecoder()
 	utf8Bytes, _, _ := transform.Bytes(decoder, out)
 	utf8String := string(utf8Bytes)
-	fmt.Println("UTF8string: %s", utf8String)
+	debug("UTF8string: %s", utf8String)
 	if runtime.GOOS == "windows" {
 		return strings.TrimSuffix(utf8String, "\r\n") // powershell's get-clipboard adds a windows newline to the end for some reason
 	}
@@ -389,7 +395,7 @@ func setLocalClip(s string) {
 	case "darwin":
 		copyCmd = exec.Command("pbcopy")
 	case "windows":
-		copyCmd = exec.Command("clip")
+		copyCmd = exec.Command("powershell.exe", "-command", "$input | Set-Clipboard")
 	default:
 		if _, err := exec.LookPath("xclip"); err == nil {
 			copyCmd = exec.Command("xclip", "-in", "-selection", "clipboard")
@@ -404,24 +410,32 @@ func setLocalClip(s string) {
 			os.Exit(2)
 		}
 	}
+	var stderr bytes.Buffer
+	copyCmd.Stderr = &stderr
 	in, err := copyCmd.StdinPipe()
 	if err != nil {
+		fmt.Println("Command error output:", stderr.String())
 		handleError(err)
 		return
 	}
 	if err = copyCmd.Start(); err != nil {
+		fmt.Println("Command error output:", stderr.String())
 		handleError(err)
 		return
 	}
+	debug("Setting local clipboard with string and bytes: ", s, []byte(s))
 	if _, err = in.Write([]byte(s)); err != nil {
+		fmt.Println("Command error output:", stderr.String())
 		handleError(err)
 		return
 	}
 	if err = in.Close(); err != nil {
+		fmt.Println("Command error output:", stderr.String())
 		handleError(err)
 		return
 	}
 	if err = copyCmd.Wait(); err != nil {
+		fmt.Println("Command error output:", stderr.String())
 		handleError(err)
 		return
 	}
