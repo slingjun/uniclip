@@ -167,6 +167,7 @@ func MonitorLocalClip(w *bufio.Writer) {
 		//debug("clipboard changed so sending it. localClipboard =", localClipboard
 		err := sendClipboard(w, localClipboard)
 		if err != nil {
+			fmt.Println("Error Occured")
 			handleError(err)
 			return
 		}
@@ -182,6 +183,13 @@ func MonitorSentClips(r *bufio.Reader) {
 	var foreignClipboardBytes []byte
 	for {
 		err := gob.NewDecoder(r).Decode(&foreignClipboardBytes)
+		if err != nil {
+			if err == io.EOF {
+				return // no need to monitor: disconnected
+			}
+			handleError(err)
+			continue // continue getting next message
+		}
 		// OS Encoding to UTF-8
 		result := common.GetBestCharset(foreignClipboardBytes)
 		fmt.Println("Client String: %q, Detected Encoding:", foreignClipboardBytes, result.Charset)
